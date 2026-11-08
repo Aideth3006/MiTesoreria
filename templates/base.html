@@ -1,0 +1,36 @@
+{% load static %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07584e">
+  <title>{% block title %}MiTesorería{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'core/app.css' %}">
+  <script src="{% static 'core/accessibility.js' %}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Saltar al contenido</a>
+  <aside class="sidebar">
+    <a class="brand" href="{% url 'home' %}"><span class="brand-mark">M</span><span class="brand-copy">MiTesorería<small>GESTIÓN DE CAJAS</small></span></a>
+    <nav aria-label="Navegación principal">
+      <a href="{% url 'home' %}" class="{% if request.resolver_match.url_name == 'home' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#overview"/></svg><span>Inicio</span></a>
+      <a href="{% url 'boxes' %}" class="{% if request.resolver_match.url_name == 'boxes' or request.resolver_match.url_name == 'box-edit' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#box"/></svg><span>Cajas</span></a>
+      <a href="{% url 'incomes' %}" class="{% if request.resolver_match.url_name == 'incomes' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#income"/></svg><span>Ingresos</span></a>
+      <a href="{% url 'expenses' %}" class="{% if request.resolver_match.url_name == 'expenses' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#expense"/></svg><span>Gastos</span></a>
+      <a href="{% url 'projects' %}" class="{% if request.resolver_match.url_name == 'projects' or request.resolver_match.url_name == 'project-detail' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#project"/></svg><span>Proyectos</span></a>
+      <a href="{% url 'settings' %}" class="{% if request.resolver_match.url_name == 'settings' %}active{% endif %}"><svg class="icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#settings"/></svg><span>Configuración</span></a>
+    </nav>
+    <div class="sidebar-art" aria-hidden="true"><img src="{% static 'core/church.svg' %}" alt=""></div>
+    <div class="sidebar-foot"><span class="status-dot"></span>Registro local activo</div>
+  </aside>
+  <main class="main-content" id="main-content" tabindex="-1">
+    <header class="topbar"><div class="breadcrumb">Administración financiera <span>›</span> <strong>Iglesia</strong></div><a href="{% url 'admin:index' %}" class="admin-link"><svg class="icon" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="{% static 'core/icons.svg' %}#user"/></svg>Panel admin <span aria-hidden="true">⌄</span></a></header>
+    <div class="page-wrap">
+      {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+      {% block content %}{% endblock %}
+      <footer class="footer">MiTesorería <span>·</span> Administración clara y responsable</footer>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Base de datos y respaldos
+data/
+*.sqlite3
+*.sqlite3-*
+*.db
+
+# Variables privadas
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Archivos temporales
+.ui-verification*
+staticfiles/
+.pytest_cache/
