@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block title %}Editar {{ project.name }} · MiTesorería{% endblock %}{% block content %}
+<div class="page-heading"><div><div class="eyebrow"><a href="{% url 'project-detail' project.pk %}">{{ project.name }}</a> / EDICIÓN</div><h1>Editar proyecto</h1><p>Los aportes y la caja física asociada se conservarán.</p></div></div>
+<section class="dashboard-panel form-panel"><div class="panel-title"><div><h2>Datos del proyecto</h2><p>Meta actual: ${{ project.goal|floatformat:2 }} · Recaudado: ${{ project.raised|floatformat:2 }}</p></div></div><form method="post" class="form-stack">{% csrf_token %}{{ form.as_p }}<div class="form-actions"><a class="button button-secondary" href="{% url 'project-detail' project.pk %}">Cancelar</a><button class="button button-primary" type="submit">Guardar cambios</button></div></form></section>
+{% endblock %}

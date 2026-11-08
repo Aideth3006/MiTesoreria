@@ -10,8 +10,8 @@ from django.http import HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import (CashBoxForm, CashBoxUpdateForm, CategoryForm, CommitmentForm, CommitmentPaymentForm,
-                    CompleteProjectForm, ContributionForm, MovementForm, ProjectForm,
+from .forms import (CashBoxForm, CashBoxPeriodForm, CashBoxUpdateForm, CategoryForm, CommitmentForm, CommitmentPaymentForm,
+                    CompleteProjectForm, ContributionForm, MovementForm, ProjectForm, ProjectUpdateForm,
                     TreasuryConfigurationForm)
 from .models import CashBox, Category, Movement, PaymentCommitment, Project, TreasuryConfiguration
 
@@ -24,7 +24,11 @@ def _audit_record(request, record):
 
 def dashboard(request):
     configuration = TreasuryConfiguration.objects.select_related("principal_cash_box").filter(pk=1).first()
-    principal = configuration.principal_cash_box if configuration and configuration.principal_cash_box_id else None
+    principal = None
+    if configuration and configuration.principal_cash_box_id:
+        principal = CashBox.objects.filter(
+            pk=configuration.principal_cash_box_id, project__isnull=True,
+        ).first()
     today = timezone.localdate()
     month_start = today.replace(day=1)
     monthly = Movement.objects.none()
@@ -43,7 +47,6 @@ def dashboard(request):
         "monthly_income": monthly_income, "monthly_expenses": monthly_expenses,
         "recent": recent, "today": today, "month_start": month_start,
         "active_projects": active_projects, "secondary_boxes": active_boxes,
-        "active_box_count": CashBox.objects.filter(is_active=True).count(),
         "project_count": active_projects.count(),
         "completed_project_count": Project.objects.filter(status=Project.Status.COMPLETED).count(),
         "income_chart_height": int(monthly_income * 100 / chart_max),
@@ -76,7 +79,7 @@ def box_list(request):
         else:
             messages.success(request, "Caja principal actualizada.")
             return redirect("boxes")
-    boxes = CashBox.objects.all().select_related("project")
+    boxes = CashBox.objects.filter(project__isnull=True)
     return render(request, "core/boxes.html", {
         "boxes": boxes, "box_form": box_form, "principal_form": principal_form,
         "configuration": configuration,
@@ -84,7 +87,7 @@ def box_list(request):
 
 
 def box_edit(request, box_id):
-    box = get_object_or_404(CashBox, pk=box_id)
+    box = get_object_or_404(CashBox, pk=box_id, project__isnull=True)
     form = CashBoxUpdateForm(request.POST or None, instance=box, request=request)
     if request.method == "POST" and form.is_valid():
         try:
@@ -94,7 +97,26 @@ def box_edit(request, box_id):
         else:
             messages.success(request, "Datos de la caja actualizados.")
             return redirect("boxes")
-    return render(request, "core/box_edit.html", {"box": box, "form": form})
+    today = timezone.localdate()
+    default_start = today.replace(day=1)
+    period_form = CashBoxPeriodForm(request.GET or None, initial={"start_date": default_start, "end_date": today})
+    start_date, end_date = default_start, today
+    if period_form.is_valid():
+        start_date = period_form.cleaned_data["start_date"]
+        end_date = period_form.cleaned_data["end_date"]
+    period_movements = box.movements.filter(
+        created_at__date__gte=start_date, created_at__date__lte=end_date,
+    ).select_related("category", "project", "commitment")
+    period_income = period_movements.filter(kind=Movement.Kind.INCOME).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    period_expenses = period_movements.filter(kind=Movement.Kind.EXPENSE).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    page = Paginator(period_movements, 25).get_page(request.GET.get("page"))
+    return render(request, "core/box_edit.html", {
+        "box": box, "form": form, "period_form": period_form,
+        "start_date": start_date, "end_date": end_date,
+        "period_income": period_income, "period_expenses": period_expenses,
+        "period_net": period_income - period_expenses,
+        "period_movements": page,
+    })
 
 
 def movement_list(request, kind):
@@ -139,6 +161,20 @@ def project_list(request):
     return render(request, "core/projects.html", {"active_projects": active_projects, "completed_projects": completed_projects, "form": form})
 
 
+def project_edit(request, project_id):
+    project = get_object_or_404(Project.objects.select_related("cash_box"), pk=project_id)
+    form = ProjectUpdateForm(request.POST or None, instance=project, request=request)
+    if request.method == "POST" and form.is_valid():
+        try:
+            form.save()
+        except (ValidationError, IntegrityError) as error:
+            form.add_error(None, error)
+        else:
+            messages.success(request, "Proyecto actualizado; se conservaron su caja y su historial.")
+            return redirect("project-detail", project_id=project.pk)
+    return render(request, "core/project_edit.html", {"project": project, "form": form})
+
+
 def project_detail(request, project_id):
     project = get_object_or_404(Project.objects.select_related("cash_box"), pk=project_id)
     contributions = project.contributions.filter(kind=Movement.Kind.CONTRIBUTION).select_related("commitment")
@@ -148,6 +184,15 @@ def project_detail(request, project_id):
     commitments = project.commitments.all()
     for commitment in commitments:
         commitment.status_label = commitment.payment_status_label
+        accumulated = Decimal("0.00")
+        commitment.payment_history_rows = []
+        for payment in commitment.payments.order_by("created_at", "pk"):
+            accumulated += payment.amount
+            commitment.payment_history_rows.append({
+                "payment": payment,
+                "accumulated": accumulated,
+                "pending": max(Decimal("0.00"), commitment.amount - accumulated),
+            })
     commitment_form = CommitmentForm(request.POST or None, project=project, request=request, prefix="commitment")
     if request.method == "POST" and project.status == Project.Status.ACTIVE and request.POST.get("action") == "add_commitment" and commitment_form.is_valid():
         try:
@@ -183,6 +228,14 @@ def contribute(request, project_id):
 def pay_commitment(request, commitment_id):
     commitment = get_object_or_404(PaymentCommitment.objects.select_related("project", "project__cash_box"), pk=commitment_id)
     form = CommitmentPaymentForm(request.POST or None, commitment=commitment)
+    accumulated = Decimal("0.00")
+    payment_history = []
+    for payment in commitment.payments.order_by("created_at", "pk"):
+        accumulated += payment.amount
+        payment_history.append({
+            "payment": payment, "accumulated": accumulated,
+            "pending": max(Decimal("0.00"), commitment.amount - accumulated),
+        })
     if request.method == "POST" and form.is_valid():
         key = form.cleaned_data["submission_key"]
         existing = Movement.objects.filter(submission_key=key).first()
@@ -212,9 +265,9 @@ def pay_commitment(request, commitment_id):
                     return redirect("project-detail", project_id=commitment.project_id)
                 form.add_error(None, "No se pudo registrar el pago. Actualiza la página e inténtalo nuevamente.")
             else:
-                messages.success(request, f"Pago aplicado. Pendiente: ${locked.pending_amount:.2f}.")
+                messages.success(request, f"Pago aplicado. Pendiente: ${locked.pending_amount:.2f}; excedente: ${locked.excess_amount:.2f}.")
                 return redirect("project-detail", project_id=commitment.project_id)
-    return render(request, "core/pay_commitment.html", {"commitment": commitment, "form": form})
+    return render(request, "core/pay_commitment.html", {"commitment": commitment, "form": form, "payment_history": payment_history})
 
 
 def complete_project(request, project_id):

@@ -186,6 +186,10 @@ class PaymentCommitment(TrackedModel):
         return max(Decimal("0.00"), self.amount - self.paid_amount)
 
     @property
+    def excess_amount(self):
+        return max(Decimal("0.00"), self.paid_amount - self.amount)
+
+    @property
     def payment_status(self):
         if self.pending_amount == 0:
             return self.PaymentStatus.COMPLETED
@@ -240,10 +244,6 @@ class Movement(TrackedModel):
             if (previous.cash_box_id != self.cash_box_id or previous.kind != self.kind or previous.amount != self.amount
                     or previous.project_id != self.project_id or previous.commitment_id != self.commitment_id):
                 raise ValidationError("No se puede modificar el importe, tipo, caja o relación de un movimiento existente.")
-        elif self.commitment_id:
-            commitment = PaymentCommitment.objects.select_for_update().get(pk=self.commitment_id)
-            if self.amount > commitment.pending_amount:
-                raise ValidationError({"amount": "El pago supera el monto pendiente del compromiso."})
         if self.kind == self.Kind.EXPENSE:
             available = self.cash_box.balance
             if self.pk:

@@ -28,7 +28,10 @@ class CashBoxForm(AuditForm):
     class Meta:
         model = CashBox
         fields = ["name", "comment", "is_active"]
-        widgets = {"comment": forms.Textarea(attrs={"rows": 3})}
+        widgets = {
+            "comment": forms.Textarea(attrs={"rows": 3}),
+            "is_active": forms.CheckboxInput(attrs={"class": "switch-input"}),
+        }
 
     def save(self, commit=True):
         opening_balance = self.cleaned_data["opening_balance"]
@@ -47,7 +50,21 @@ class CashBoxUpdateForm(AuditForm):
     class Meta:
         model = CashBox
         fields = ["name", "comment", "is_active"]
-        widgets = {"comment": forms.Textarea(attrs={"rows": 3})}
+        widgets = {
+            "comment": forms.Textarea(attrs={"rows": 3}),
+            "is_active": forms.CheckboxInput(attrs={"class": "switch-input"}),
+        }
+
+
+class CashBoxPeriodForm(forms.Form):
+    start_date = forms.DateField(label="Desde", widget=forms.DateInput(attrs={"type": "date"}))
+    end_date = forms.DateField(label="Hasta", widget=forms.DateInput(attrs={"type": "date"}))
+
+    def clean(self):
+        data = super().clean()
+        if data.get("start_date") and data.get("end_date") and data["end_date"] < data["start_date"]:
+            self.add_error("end_date", "La fecha Hasta debe ser igual o posterior a Desde.")
+        return data
 
 
 class MovementForm(AuditForm):
@@ -111,6 +128,40 @@ class ProjectForm(AuditForm):
                     )
                 self.save_m2m()
         return project
+
+
+class ProjectUpdateForm(AuditForm):
+    class Meta:
+        model = Project
+        fields = ["name", "goal", "start_date", "expected_end_date", "actual_end_date"]
+        widgets = {
+            "start_date": forms.DateInput(attrs={"type": "date"}),
+            "expected_end_date": forms.DateInput(attrs={"type": "date"}),
+            "actual_end_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def clean(self):
+        data = super().clean()
+        if self.instance.status == Project.Status.ACTIVE and data.get("actual_end_date"):
+            self.add_error("actual_end_date", "Finalice el proyecto con la acción correspondiente.")
+        return data
+
+    def save(self, commit=True):
+        with transaction.atomic():
+            project = super().save(commit=False)
+            if self.request:
+                project.source_ip = getattr(self.request, "audit_ip", None)
+                project.device_info = getattr(self.request, "audit_device", "")
+            if commit:
+                project.save()
+                project_box = project.cash_box
+                project_box.name = f"Proyecto · {project.name}"
+                if self.request:
+                    project_box.source_ip = getattr(self.request, "audit_ip", None)
+                    project_box.device_info = getattr(self.request, "audit_device", "")
+                project_box.save()
+                self.save_m2m()
+            return project
 
 
 class ContributionForm(AuditForm):

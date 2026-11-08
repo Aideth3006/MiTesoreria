@@ -1,4 +1,4 @@
-# MiTesorería v0.2
+# MiTesorería v0.4
 
 MVP local para registrar movimientos de cajas físicas de una iglesia. Los saldos se calculan desde el historial. Incluye balance de la caja principal, cajas, ingresos, gastos, proyectos, aportes individuales, compromisos de pago y categorías compartidas.
 
@@ -19,16 +19,18 @@ docker compose exec web python manage.py createsuperuser
 
 SQLite reside en el volumen Docker existente `sqlite_data`, montado en `/data`. El `Dockerfile` ejecuta las migraciones al iniciar el contenedor. Antes de actualizar una base piloto, revisa las migraciones nuevas y respalda el volumen. `docker compose down` conserva la base. No uses `docker compose down -v`: elimina el volumen.
 
-## Funciones v0.2
+## Funciones v0.4
 
-- Elige una única caja principal en Configuración. Si no se elige, el dashboard lo indica y no suma cajas de otros departamentos o proyectos.
+- Elige una única caja principal en Cajas. El balance, los ingresos y los gastos superiores corresponden exclusivamente a esa caja; los departamentos aparecen en tarjetas separadas.
 - Los ingresos y gastos del dashboard muestran el mes actual de la caja principal.
 - Los proyectos activos muestran meta, aportes recibidos, porcentaje y faltante; el porcentaje visual se limita a 100% aunque el total real siga visible.
-- El detalle del proyecto muestra el historial paginado de aportes, el resumen agrupado por nombre textual y los compromisos.
-- Los compromisos no cambian el balance. Cada pago parcial se vincula explícitamente, produce un movimiento único y no puede superar el pendiente.
+- Las cajas de proyecto se administran desde Proyectos y no aparecen en la lista general de cajas.
+- El detalle de caja resume ingresos, gastos, variación e historial para un intervalo inclusivo de fechas; el saldo actual no depende del intervalo.
+- Los proyectos existentes se pueden editar sin reemplazar su caja ni perder aportes; el detalle conserva el historial paginado.
+- Los compromisos no cambian el balance. Cada pago se vincula explícitamente y produce un movimiento idempotente. Los pagos pueden superar el compromiso: el pendiente queda en cero y el excedente se muestra por separado.
+- El detalle de compromiso muestra cada pago, el total acumulado y el pendiente.
 - En Ingresos y Gastos, selecciona una caja para consultar su saldo; al guardar se muestra el nuevo saldo.
 - Las categorías se comparten entre cajas y se validan ignorando diferencias de mayúsculas y espacios repetidos.
-- El botón «Letra grande» guarda la preferencia en el navegador.
 
 Los movimientos históricos no se editan ni borran desde la aplicación. No se cargaron datos demo adicionales.
 
@@ -76,7 +78,7 @@ python manage.py makemigrations --check --dry-run
 python manage.py check
 ```
 
-`manage.py test` crea su propia base temporal y ejecuta las migraciones ahí. Para actualizar el contenedor existente, revisa las migraciones y luego ejecuta `docker compose up --build`; no elimines el volumen `sqlite_data`.
+`manage.py test` crea su propia base temporal y ejecuta las migraciones ahí. Para actualizar el contenedor existente, revisa las migraciones y luego ejecuta `docker compose up --build -d`; no elimines el volumen `sqlite_data`. Esta revisión no requiere migraciones nuevas.
 
 ## Reglas básicas
 

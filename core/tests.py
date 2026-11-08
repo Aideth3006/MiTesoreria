@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone as dt_timezone
 from decimal import Decimal
 from io import StringIO
 from uuid import uuid4
@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.core.management.base import CommandError
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from django.urls import reverse
 
 from .forms import CashBoxForm, CommitmentPaymentForm, ContributionForm, MovementForm, ProjectForm
@@ -29,9 +30,12 @@ class HomePageTests(TestCase):
     def test_dashboard_balance_uses_only_designated_principal_box(self):
         main_box = CashBox.objects.create(name="Caja principal prueba")
         other_box = CashBox.objects.create(name="Caja jóvenes prueba")
+        project_box = CashBox.objects.create(name="Caja proyecto no dashboard")
+        project = Project.objects.create(name="Proyecto caja dashboard", goal=Decimal("500.00"), start_date=date(2026, 1, 1), cash_box=project_box)
         category = Category.objects.get(name="Ofrendas", kind=Category.Kind.INCOME)
         Movement.objects.create(cash_box=main_box, category=category, kind=Movement.Kind.INCOME, amount=Decimal("80.00"))
         Movement.objects.create(cash_box=other_box, category=category, kind=Movement.Kind.INCOME, amount=Decimal("900.00"))
+        Movement.objects.create(cash_box=project_box, project=project, kind=Movement.Kind.CONTRIBUTION, amount=Decimal("700.00"))
         TreasuryConfiguration.objects.create(pk=1, principal_cash_box=main_box)
         response = self.client.get(reverse("home"))
         self.assertContains(response, "$80,00")
@@ -41,6 +45,27 @@ class HomePageTests(TestCase):
         self.assertContains(response, "Caja jóvenes prueba")
         self.assertEqual(response.context["total"], Decimal("80.00"))
         self.assertEqual(response.context["monthly_income"], Decimal("80.00"))
+        self.assertEqual(response.context["monthly_expenses"], Decimal("0.00"))
+        self.assertNotContains(response, "Caja proyecto no dashboard")
+
+    def test_boxes_screen_hides_project_boxes(self):
+        department_box = CashBox.objects.create(name="Caja departamento visible")
+        project_box = CashBox.objects.create(name="Caja interna proyecto")
+        Project.objects.create(name="Proyecto oculto en cajas", goal=Decimal("100.00"), start_date=date(2026, 1, 1), cash_box=project_box)
+        response = self.client.get(reverse("boxes"))
+        self.assertContains(response, department_box.name)
+        self.assertNotContains(response, project_box.name)
+        self.assertNotContains(response, "Proyecto oculto en cajas")
+
+    def test_dashboard_never_uses_project_cash_box_as_principal(self):
+        project_box = CashBox.objects.create(name="Caja interna principal inválida")
+        project = Project.objects.create(name="Proyecto interno", goal=Decimal("100.00"), start_date=date(2026, 1, 1), cash_box=project_box)
+        Movement.objects.create(cash_box=project_box, project=project, kind=Movement.Kind.CONTRIBUTION, amount=Decimal("70.00"))
+        TreasuryConfiguration.objects.create(pk=1, principal_cash_box=project_box)
+        response = self.client.get(reverse("home"))
+        self.assertIsNone(response.context["principal"])
+        self.assertIsNone(response.context["total"])
+        self.assertEqual(response.context["monthly_income"], Decimal("0.00"))
 
     def test_dashboard_does_not_choose_a_box_when_principal_is_unset(self):
         CashBox.objects.create(name="Caja cualquiera")
@@ -133,6 +158,45 @@ class FinanceRulesTests(TestCase):
         with self.assertRaises(ValidationError):
             Category.objects.create(name="  ofrendas  ", kind=Category.Kind.INCOME)
 
+    def test_box_period_filter_is_inclusive_and_does_not_change_current_balance(self):
+        opening = Movement.objects.create(cash_box=self.box, kind=Movement.Kind.OPENING, amount=Decimal("1000.00"))
+        inside_income = Movement.objects.create(cash_box=self.box, category=self.income, kind=Movement.Kind.INCOME, amount=Decimal("30.00"))
+        outside_income = Movement.objects.create(cash_box=self.box, category=self.income, kind=Movement.Kind.INCOME, amount=Decimal("80.00"))
+        end_expense = Movement.objects.create(cash_box=self.box, category=self.expense, kind=Movement.Kind.EXPENSE, amount=Decimal("10.00"))
+        other_box = CashBox.objects.create(name="Otra caja ajena al filtro")
+        other_movement = Movement.objects.create(cash_box=other_box, category=self.income, kind=Movement.Kind.INCOME, amount=Decimal("500.00"))
+        dates = {
+            opening.pk: datetime(2026, 2, 11, 9, tzinfo=dt_timezone.utc),
+            inside_income.pk: datetime(2026, 2, 10, 12, tzinfo=dt_timezone.utc),
+            outside_income.pk: datetime(2026, 2, 21, 12, tzinfo=dt_timezone.utc),
+            end_expense.pk: datetime(2026, 2, 20, 23, 59, tzinfo=dt_timezone.utc),
+            other_movement.pk: datetime(2026, 2, 12, 12, tzinfo=dt_timezone.utc),
+        }
+        for movement_id, created_at in dates.items():
+            Movement.objects.filter(pk=movement_id).update(created_at=created_at)
+        response = self.client.get(reverse("box-edit", args=[self.box.pk]), {"start_date": "2026-02-10", "end_date": "2026-02-20"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["period_income"], Decimal("30.00"))
+        self.assertEqual(response.context["period_expenses"], Decimal("10.00"))
+        self.assertEqual(response.context["period_net"], Decimal("20.00"))
+        self.assertEqual(response.context["box"].balance, Decimal("1100.00"))
+        self.assertEqual([row.pk for row in response.context["period_movements"]], [end_expense.pk, opening.pk, inside_income.pk])
+        self.assertNotContains(response, "Otra caja ajena al filtro")
+        self.assertEqual(response.context["period_form"].cleaned_data["start_date"], date(2026, 2, 10))
+        self.assertEqual(response.context["period_form"].cleaned_data["end_date"], date(2026, 2, 20))
+
+    def test_box_period_defaults_to_current_month_through_today(self):
+        response = self.client.get(reverse("box-edit", args=[self.box.pk]))
+        today = timezone.localdate()
+        self.assertEqual(response.context["start_date"], today.replace(day=1))
+        self.assertEqual(response.context["end_date"], today)
+
+    def test_box_period_rejects_reversed_date_interval(self):
+        response = self.client.get(reverse("box-edit", args=[self.box.pk]), {"start_date": "2026-02-21", "end_date": "2026-02-20"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["period_form"].is_valid())
+        self.assertEqual(response.context["period_income"], Decimal("0.00"))
+
 
 class ProjectTests(TestCase):
     def test_project_goal_must_be_positive(self):
@@ -177,6 +241,28 @@ class ProjectTests(TestCase):
         self.assertEqual(response.context["project"].progress_percent, 100)
         self.assertContains(response, "$125,00")
 
+    def test_editing_project_preserves_its_box_and_historical_contributions(self):
+        box = CashBox.objects.create(name="Proyecto · Techo edición", comment="Caja existente")
+        project = Project.objects.create(name="Techo edición", goal=Decimal("100.00"), start_date=date(2026, 1, 1), cash_box=box)
+        Movement.objects.create(cash_box=box, project=project, kind=Movement.Kind.CONTRIBUTION, amount=Decimal("50.00"), contributor_name="Eva")
+        edit_page = self.client.get(reverse("project-edit", args=[project.pk]))
+        self.assertContains(edit_page, "Editar proyecto")
+        response = self.client.post(reverse("project-edit", args=[project.pk]), {
+            "name": "Techo renovado", "goal": "200.00", "start_date": "2026-01-01",
+            "expected_end_date": "2026-12-01", "actual_end_date": "",
+        })
+        self.assertEqual(response.status_code, 302)
+        project.refresh_from_db()
+        box.refresh_from_db()
+        self.assertEqual(project.cash_box_id, box.pk)
+        self.assertEqual(CashBox.objects.filter(project=project).count(), 1)
+        self.assertEqual(box.name, "Proyecto · Techo renovado")
+        self.assertEqual(box.comment, "Caja existente")
+        self.assertEqual(project.raised, Decimal("50.00"))
+        self.assertEqual(project.shortfall, Decimal("150.00"))
+        self.assertEqual(project.progress_percent, 25)
+        self.assertEqual(project.contributions.count(), 1)
+
     def test_commitment_does_not_increase_balance_and_partial_pay_is_idempotent(self):
         box = CashBox.objects.create(name="Caja compromiso")
         project = Project.objects.create(name="Proyecto compromiso", goal=Decimal("200.00"), start_date=date(2026, 1, 1), cash_box=box)
@@ -199,18 +285,33 @@ class ProjectTests(TestCase):
         self.assertEqual(commitment.payment_status, PaymentCommitment.PaymentStatus.COMPLETED)
         self.assertEqual(box.balance, Decimal("100.00"))
 
-    def test_commitment_rejects_payment_above_pending_amount(self):
-        box = CashBox.objects.create(name="Caja límite")
-        project = Project.objects.create(name="Proyecto límite", goal=Decimal("200.00"), start_date=date(2026, 1, 1), cash_box=box)
-        commitment = PaymentCommitment.objects.create(project=project, person_name="Luis", amount=Decimal("20.00"), commitment_date=date(2026, 4, 1))
-        first_payment = Movement(cash_box=box, project=project, commitment=commitment, kind=Movement.Kind.CONTRIBUTION, amount=Decimal("10.00"), contributor_name="Luis")
-        first_payment.save()
-        response = self.client.post(reverse("pay-commitment", args=[commitment.pk]), {
-            "amount": "10.01", "contributor_name": "Luis", "note": "", "submission_key": str(uuid4()),
-        })
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(commitment.payments.count(), 1)
-        self.assertEqual(box.balance, Decimal("10.00"))
+    def test_commitment_accepts_overpayment_and_shows_excess_and_payment_history(self):
+        box = CashBox.objects.create(name="Caja sobrepago")
+        project = Project.objects.create(name="Proyecto sobrepago", goal=Decimal("200.00"), start_date=date(2026, 1, 1), cash_box=box)
+        commitment = PaymentCommitment.objects.create(project=project, person_name="Luis", amount=Decimal("100.00"), commitment_date=date(2026, 4, 1))
+        url = reverse("pay-commitment", args=[commitment.pk])
+        payment_page = self.client.get(url)
+        self.assertContains(payment_page, "Historial de pagos")
+        self.assertContains(payment_page, "Aún no hay pagos registrados")
+        first_data = {"amount": "40.00", "contributor_name": "Luis", "note": "Primer pago", "submission_key": str(uuid4())}
+        self.assertEqual(self.client.post(url, first_data).status_code, 302)
+        second_data = {"amount": "80.00", "contributor_name": "Luis", "note": "Segundo pago", "submission_key": str(uuid4())}
+        self.assertEqual(self.client.post(url, second_data).status_code, 302)
+        self.assertEqual(self.client.post(url, second_data).status_code, 302)
+        commitment.refresh_from_db()
+        self.assertEqual(commitment.payments.count(), 2)
+        self.assertEqual(commitment.paid_amount, Decimal("120.00"))
+        self.assertEqual(commitment.pending_amount, Decimal("0.00"))
+        self.assertEqual(commitment.excess_amount, Decimal("20.00"))
+        self.assertEqual(box.balance, Decimal("120.00"))
+        self.assertEqual(project.raised, Decimal("120.00"))
+        response = self.client.get(reverse("project-detail", args=[project.pk]))
+        commitment_in_page = next(iter(response.context["commitments"]))
+        self.assertEqual(len(commitment_in_page.payment_history_rows), 2)
+        self.assertEqual(commitment_in_page.payment_history_rows[-1]["accumulated"], Decimal("120.00"))
+        self.assertEqual(commitment_in_page.payment_history_rows[-1]["pending"], Decimal("0.00"))
+        self.assertContains(response, "Excedente")
+        self.assertContains(response, "$20,00")
 
     def test_finishing_project_warns_about_pending_commitments(self):
         box = CashBox.objects.create(name="Caja con compromiso pendiente")

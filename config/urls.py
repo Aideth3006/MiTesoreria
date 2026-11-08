@@ -13,6 +13,7 @@ urlpatterns = [
     path("cajas/saldo/", views.cash_box_balance, name="cashbox-balance"),
     path("proyectos/", views.project_list, name="projects"),
     path("proyectos/<int:project_id>/", views.project_detail, name="project-detail"),
+    path("proyectos/<int:project_id>/editar/", views.project_edit, name="project-edit"),
     path("proyectos/<int:project_id>/aportes/", views.contribute, name="contribute"),
     path("compromisos/<int:commitment_id>/pagar/", views.pay_commitment, name="pay-commitment"),
     path("proyectos/<int:project_id>/finalizar/", views.complete_project, name="complete-project"),
